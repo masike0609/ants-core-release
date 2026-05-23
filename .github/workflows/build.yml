@@ -1,0 +1,114 @@
+name: Build
+
+on:
+  repository_dispatch:
+    types: [build]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to build (tag or sha)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPO: masike0609/ants-core
+  SOURCE_REF: ${{ github.event.client_payload.ref || inputs.ref }}
+  # Opt in to Node 24 now; default flips June 2026 — silences deprecation noise.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake clang libclang-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-ndk --locked
+      - name: Build
+        run: make android ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+      - name: Package
+        run: tar -czf antscore-android.tar.gz -C bin/jniLibs .
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SOURCE_REF }}
+          files: antscore-android.tar.gz
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake clang libclang-dev nasm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: make linux
+      - run: tar -czf antscore-linux-x86_64.tar.gz -C bin/linux .
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SOURCE_REF }}
+          files: antscore-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ilammy/setup-nasm@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package
+        run: |
+          mkdir bin\windows
+          copy target\release\antscore.dll bin\windows\
+          tar -czf antscore-windows-x86_64.tar.gz -C bin\windows .
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SOURCE_REF }}
+          files: antscore-windows-x86_64.tar.gz
+
+  apple:
+    runs-on: macos-latest
+    # Align with what rustc targets for iOS/macOS so the C deps (zstd-sys etc.)
+    # don't get compiled against a newer SDK than the link step — fixes the
+    # `___chkstk_darwin` undefined symbol on iOS.
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - run: brew install protobuf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cbindgen --locked
+      - run: make apple
+      - run: tar -czf antscore-apple.tar.gz -C bin antscore.xcframework
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.SOURCE_REF }}
+          files: antscore-apple.tar.gz
